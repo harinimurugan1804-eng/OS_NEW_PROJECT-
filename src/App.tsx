@@ -10,6 +10,7 @@ import { PcbTable } from './components/PcbTable';
 import { TransitionLog } from './components/TransitionLog';
 import { MetricsTable } from './components/MetricsTable';
 import { ManualPanel } from './components/ManualPanel';
+import { replayView } from './components/replay';
 import './App.css';
 
 type Mode = 'auto' | 'manual';
@@ -56,17 +57,24 @@ export default function App() {
   const [delay, setDelay] = useState(700);
   const [selected, setSelected] = useState(1);
   const [manualError, setManualError] = useState<string | null>(null);
+  // How many of the last step's transitions the diagram has shown so far (null = all).
+  const [replayFrame, setReplayFrame] = useState<number | null>(null);
 
   const { specs, errors } = useMemo(() => validate(rows), [rows]);
   const metrics = useMemo(() => computeMetrics(sim), [sim]);
   const started = history.length > 0;
   const previous = history[history.length - 1];
   const recent = previous ? sim.log.slice(previous.log.length) : [];
+  const replaying = replayFrame !== null && previous !== undefined && replayFrame < recent.length;
+  const diagramSim = replaying ? replayView(previous, recent.slice(0, replayFrame)) : sim;
+  const diagramRecent = replaying ? [recent[replayFrame - 1]] : recent;
+  const frameMs = Math.min(350, Math.max(120, Math.round(delay / 2)));
 
   function reset(nextSpecs = specs, nextAlgo = algorithm, nextQuantum = quantum) {
     setPlaying(false);
     setHistory([]);
     setManualError(null);
+    setReplayFrame(null);
     if (nextSpecs) {
       setSim(createSim(nextSpecs, nextAlgo, nextQuantum));
       setSelected(nextSpecs[0]?.pid ?? 1);
@@ -91,18 +99,21 @@ export default function App() {
     }
     setHistory([...history, sim]);
     setSim(step(sim));
+    setReplayFrame(1);
   }
 
   function stepBack() {
     if (history.length === 0) return;
     setPlaying(false);
     setManualError(null);
+    setReplayFrame(null);
     setSim(history[history.length - 1]);
     setHistory(history.slice(0, -1));
   }
 
   function manualMove(to: ProcState) {
     const result = manualTransition(sim, selected, to);
+    setReplayFrame(null);
     setManualError(result.error);
     if (!result.error) {
       setHistory([...history, sim]);
@@ -110,9 +121,20 @@ export default function App() {
     }
   }
 
-  // Auto-play: one tick every `delay` milliseconds.
+  // Diagram replay: show each transition of the last step one at a time.
   useEffect(() => {
-    if (!playing || mode !== 'auto') return;
+    if (replayFrame === null) return;
+    if (replayFrame >= recent.length) {
+      setReplayFrame(null);
+      return;
+    }
+    const id = window.setTimeout(() => setReplayFrame(replayFrame + 1), frameMs);
+    return () => window.clearTimeout(id);
+  }, [replayFrame, recent.length, frameMs]);
+
+  // Auto-play: one tick every `delay` milliseconds, after the replay finishes.
+  useEffect(() => {
+    if (!playing || mode !== 'auto' || replaying) return;
     const id = window.setTimeout(stepOnce, delay);
     return () => window.clearTimeout(id);
   });
@@ -251,7 +273,7 @@ export default function App() {
                 </label>
               )}
             </div>
-            <StateDiagram sim={sim} recent={recent} />
+            <StateDiagram sim={diagramSim} recent={diagramRecent} />
             {recent.length > 0 && (
               <ul className="recent" aria-label="Transitions in the last step">
                 {recent.map((r, i) => (
